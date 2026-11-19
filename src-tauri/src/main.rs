@@ -1,0 +1,306 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod activation;
+mod cloud;
+mod sign_in;
+mod tray;
+mod updater;
+
+use activation::{Activation, KeyStatus, Operation};
+use cloud::{Cloud, Error};
+use serde::Serialize;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_opener::OpenerExt;
+use tokio::sync::Mutex;
+use url::Url;
+
+struct Desktop {
+    cloud: Cloud,
+    activation: Mutex<Result<Activation, Error>>,
+    sign_in: sign_in::SignIn,
+    computer_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInfo {
+    platform: &'static str,
+    mac_key_available: bool,
+    computer_name: String,
+    app_version: String,
+    os_version: String,
+}
+
+#[tauri::command]
+fn desktop_info(app: tauri::AppHandle, state: tauri::State<'_, Desktop>) -> DesktopInfo {
+    let os_version = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    DesktopInfo {
+        platform: std::env::consts::OS,
+        mac_key_available: cfg!(target_os = "macos"),
+        computer_name: state.computer_name.clone(),
+        app_version: app.package_info().version.to_string(),
+        os_version,
+    }
+}
+
+#[tauri::command]
+async fn mac_key_sync(
+    state: tauri::State<'_, Desktop>,
+    id_token: String,
+    uid: String,
+    operation: Operation,
+) -> Result<KeyStatus, Error> {
+    if !cfg!(target_os = "macos") {
+        return Err(Error::new("unsupported", "iMessage setup requires a Mac."));
+    }
+    state
+        .activation
+        .lock()
+        .await
+        .as_mut()
+        .map_err(|error| error.clone())?
+        .sync(
+            &state.cloud,
+            &id_token,
+            &uid,
+            operation,
+            state.computer_name.clone(),
+            || {
+                pebble_mac_key::extract_key().map_err(|_| {
+                    Error::new(
+                        "extraction",
+                        "Couldn't prepare this Mac for iMessage. Please try again.",
+                    )
+                })
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+async fn mac_key_reveal(
+    state: tauri::State<'_, Desktop>,
+    id_token: String,
+    uid: String,
+) -> Result<String, Error> {
+    if !cfg!(target_os = "macos") {
+        return Err(Error::new("unsupported", "iMessage setup requires a Mac."));
+    }
+    state.cloud.account(&id_token, Some(&uid)).await?;
+    tauri::async_runtime::spawn_blocking(|| {
+        pebble_mac_key::extract_key().map_err(|_| {
+            Error::new(
+                "extraction",
+                "Couldn't prepare this Mac for iMessage. Please try again.",
+            )
+        })
+    })
+    .await
+    .map_err(Error::local)?
+}
+
+#[tauri::command]
+async fn desktop_sign_in(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Desktop>,
+) -> Result<String, Error> {
+    state.sign_in.start(&app, &state.cloud).await
+}
+
+#[tauri::command]
+async fn cancel_desktop_sign_in(state: tauri::State<'_, Desktop>) -> Result<(), Error> {
+    state.sign_in.cancel().await;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_reminders(app: tauri::AppHandle, reminders: Vec<tray::Reminder>) {
+    tray::set(&app, reminders);
+}
+
+#[tauri::command]
+fn open_item(app: tauri::AppHandle, id: Option<String>, page: Option<String>) {
+    if let Some(id) = id.clone() {
+        tray::act(&app, id, tray::Op::Dismiss, None);
+    }
+    // Pages the menu bar may open, by name; never a path from the page.
+    let page = page.and_then(|p| (p == "bug-report").then_some("/bug-report".to_string()));
+    let path = id.filter(|id| cloud::valid_id(id)).map(|id| format!("/item/{id}")).or(page);
+    tray::show_main(&app, path);
+}
+
+#[tauri::command]
+fn get_reminders(app: tauri::AppHandle) -> tray::Snapshot {
+    tray::snapshot(&app)
+}
+
+#[tauri::command]
+fn reminder_action(app: tauri::AppHandle, id: String, op: tray::Op, due_at: Option<i64>) {
+    tray::act(&app, id, op, due_at);
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+const TITLE_BAR_SCRIPT: &str = r#"
+document.addEventListener("DOMContentLoaded", () => {
+  const style = document.createElement("style");
+  style.textContent = "body{padding-top:28px!important}";
+  const strip = document.createElement("div");
+  strip.setAttribute("data-tauri-drag-region", "");
+  strip.style.cssText = "position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;background:var(--bg,#fbf4ef)";
+  document.head.append(style);
+  document.body.append(strip);
+});
+"#;
+
+pub fn base_url() -> Url {
+    let url = if cfg!(debug_assertions) { "http://localhost:3017" } else { "https://index.repebble.com" };
+    Url::parse(url).expect("static URL")
+}
+
+fn allowed(url: &Url) -> bool {
+    url.origin().ascii_serialization() == "https://index.repebble.com"
+        || (cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://localhost:3017")
+}
+
+fn computer_name() -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(output) = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+    {
+        if output.status.success() {
+            let name: String = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(128)
+                .collect();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "My Mac".into()
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // An unreadable iMessage preference file must not prevent Index from opening.
+            let activation = app.path().app_config_dir().map_err(Error::local)
+                .and_then(|directory| Activation::load(activation::preferences_path(&directory)));
+            app.manage(Desktop { cloud: Cloud::new(), activation: Mutex::new(activation), sign_in: sign_in::SignIn::default(), computer_name: computer_name() });
+            // Localhost IPC exists only in a debug binary. It is never in release capabilities.
+            #[cfg(debug_assertions)]
+            app.add_capability(serde_json::json!({
+                "identifier":"index-development", "windows":["main","tray","alert"], "local":false,
+                "remote":{"urls":["http://localhost:3017"]},
+                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
+            }).to_string())?;
+            let url = base_url().join("/signin")?.to_string();
+            let navigation_app = app.handle().clone();
+            let popup_app = app.handle().clone();
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
+                .title("Pebble").inner_size(420.0, 1000.0).min_inner_size(420.0, 560.0)
+                // Title bar merged into the page: traffic lights sit over the app's own
+                // background, with a draggable strip above the content.
+                .title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true)
+                .initialization_script(TITLE_BAR_SCRIPT)
+                .on_navigation(move |url| {
+                    if allowed(url) { return true; }
+                    if matches!(url.scheme(), "https" | "http") { let _ = navigation_app.opener().open_url(url.as_str(), None::<&str>); }
+                    false
+                })
+                .on_new_window(move |url, _| {
+                    if matches!(url.scheme(), "https" | "http") { let _ = popup_app.opener().open_url(url.as_str(), None::<&str>); }
+                    tauri::webview::NewWindowResponse::Deny
+                })
+                .build()?;
+            // Menu bar popover and due-reminder alert; preloaded so they open instantly.
+            // Each page sizes its window to fit its content.
+            for (label, path) in [("tray", "/tray"), ("alert", "/tray/alert")] {
+                let nav_app = app.handle().clone();
+                WebviewWindowBuilder::new(app, label, WebviewUrl::External(base_url().join(path)?))
+                    .title("Pebble Reminders").inner_size(340.0, 120.0).resizable(false)
+                    .decorations(false).transparent(true).shadow(true).always_on_top(true)
+                    .skip_taskbar(true).visible(false).focused(false)
+                    .visible_on_all_workspaces(true)
+                    .on_navigation(move |url| {
+                        if allowed(url) && url.path() == path { return true; }
+                        if allowed(url) { tray::show_main(&nav_app, Some(url.path().to_string())); }
+                        false
+                    })
+                    .build()?;
+            }
+            tray::install(app.handle())?;
+            // Cmd+Q closes Pebble to the menu bar (macOS gives no hook to cancel a
+            // real quit); "Quit Pebble" in the menu bar item exits for real.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind};
+                let menu = Menu::default(app.handle())?;
+                if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
+                    app_menu.remove_at(app_menu.items()?.len() - 1)?; // the default Quit
+                    app_menu.append(&MenuItem::with_id(app, "close-to-menu-bar", "Quit Pebble", true, Some("CmdOrCtrl+Q"))?)?;
+                }
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id() == "close-to-menu-bar" { tray::hide_app(app); }
+                });
+            }
+            updater::spawn(app.handle());
+            Ok(())
+        })
+        // Closing the window hides it so the menu bar item keeps updating.
+        .on_window_event(|window, event| {
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                tauri::WindowEvent::Focused(false) if window.label() == "tray" => {
+                    tray::popover_blurred(window.app_handle());
+                }
+                _ => {}
+            }
+        })
+        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates])
+        .build(tauri::generate_context!())
+        .expect("Pebble desktop failed to start")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                tray::show_main(_app, None);
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pins_remote_origin() {
+        assert!(allowed(
+            &Url::parse("https://index.repebble.com/settings").unwrap()
+        ));
+        for url in [
+            "http://index.repebble.com",
+            "https://index.repebble.com.evil.test",
+            "https://index.repebble.com:444",
+            "https://evil.test",
+        ] {
+            assert!(!allowed(&Url::parse(url).unwrap()));
+        }
+    }
+}

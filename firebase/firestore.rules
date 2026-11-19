@@ -1,0 +1,33 @@
+// Standalone emulator rules. Merge the chat_activation_keys match into the
+// existing production rules; do not replace the other application's rules.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    match /users/{uid} {
+      allow get: if owner(uid);
+    }
+    match /chat_activation_keys/{uid}/keys/{keyId} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid)
+        && exists(/databases/$(database)/documents/users/$(uid))
+        && request.resource.data.keys().hasOnly([
+          'computerName', 'macValidationData', 'formatVersion', 'platform', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'computerName', 'macValidationData', 'formatVersion', 'platform', 'createdAt'
+        ])
+        && request.resource.data.computerName is string
+        && request.resource.data.computerName.size() > 0
+        && request.resource.data.computerName.size() <= 128
+        && request.resource.data.macValidationData is string
+        && request.resource.data.macValidationData.size() > 0
+        && request.resource.data.macValidationData.size() <= 32768
+        && request.resource.data.formatVersion == 1
+        && request.resource.data.platform == 'macOS'
+        && request.resource.data.createdAt == request.time;
+    }
+  }
+}
