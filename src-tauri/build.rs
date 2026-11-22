@@ -12,6 +12,11 @@ fn main() {
             "get_reminders",
             "reminder_action",
             "check_for_updates",
+            "get_shortcuts",
+            "set_shortcuts",
+            "quick_submit",
+            "hide_quick",
+            "open_quick",
         ]),
     ))
     .expect("Tauri configuration is valid");

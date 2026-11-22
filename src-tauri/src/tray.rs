@@ -3,7 +3,7 @@
 //! back, and their actions (done, snooze, open) are relayed to the main window.
 //! Rust owns the clock, so the bar and alerts stay correct while windows are hidden.
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::tray::{MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
@@ -37,13 +37,22 @@ pub struct Tray {
     firing: Mutex<Vec<String>>,
     alerted: Mutex<HashSet<(String, i64)>>,
     icon: Mutex<Option<TrayIcon>>,
-    popover_shown: Mutex<Option<std::time::Instant>>,
+    /// When each menu-like window (popover, quick bar) was last opened.
+    shown_at: Mutex<HashMap<String, std::time::Instant>>,
+    /// The main window can't reach Index; the list may be stale.
+    sync_down: Mutex<bool>,
+    /// When the last tick ran; a big gap means the Mac was asleep.
+    last_check: Mutex<Option<i64>>,
+    /// The app in front when a menu-like window opened, to hand focus back to.
+    pub front_app: Mutex<Option<i32>>,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     reminders: Vec<Reminder>,
     firing: Vec<String>,
+    sync_down: bool,
 }
 
 fn clean(text: &str, max: usize) -> String {
@@ -103,15 +112,19 @@ pub fn bar_title(reminders: &[Reminder], now_ms: i64) -> Option<String> {
 }
 
 /// Reminders that just came due and haven't popped up for this due time yet.
+/// `last_check` is the previous tick: after the Mac slept, everything that came
+/// due while it was asleep pops up on wake, as if it had been awake.
 pub fn newly_due(
     reminders: &[Reminder],
     alerted: &HashSet<(String, i64)>,
     now_ms: i64,
+    last_check: Option<i64>,
 ) -> Vec<(String, i64)> {
+    let since = last_check.map_or(now_ms - ALERT_WINDOW_MS, |t| t.min(now_ms - ALERT_WINDOW_MS));
     reminders
         .iter()
         .filter_map(|r| r.timed().map(|due| (r.id.clone(), due)))
-        .filter(|(_, due)| *due <= now_ms && now_ms - due < ALERT_WINDOW_MS)
+        .filter(|(_, due)| *due <= now_ms && *due > since)
         .filter(|key| !alerted.contains(key))
         .collect()
 }
@@ -135,36 +148,98 @@ fn toggle_popover(app: &AppHandle, rect: tauri::Rect) {
         return;
     }
     place_below(&window, rect);
-    *app.state::<Tray>().popover_shown.lock().unwrap() = Some(std::time::Instant::now());
+    mark_opening(app, &window);
     let _ = window.show();
+    focus_menu(window);
+}
+
+/// Call before showing a menu-like window: showing it can blur it at once.
+pub fn mark_opening(app: &AppHandle, window: &WebviewWindow) {
+    app.state::<Tray>().shown_at.lock().unwrap().insert(window.label().to_string(), std::time::Instant::now());
+    remember_front_app(app);
+}
+
+#[cfg(target_os = "macos")]
+fn remember_front_app(app: &AppHandle) {
+    use objc2_app_kit::NSWorkspace;
+    let pid = NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier());
+    *app.state::<Tray>().front_app.lock().unwrap() = pid.filter(|&p| p != std::process::id() as i32);
+}
+#[cfg(not(target_os = "macos"))]
+fn remember_front_app(_: &AppHandle) {}
+
+/// Hides a menu-like window after an action in it. If it had focus, macOS would
+/// pass focus (and bring forward) the main window; give it back to the app the
+/// user was in instead.
+pub fn put_away(app: &AppHandle, window: &WebviewWindow) {
+    let focused = window.is_focused().unwrap_or(false);
+    let _ = window.hide();
+    #[cfg(target_os = "macos")]
+    if focused {
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        if let Some(previous) = app.state::<Tray>().front_app.lock().unwrap().take()
+            .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
+        {
+            previous.activateWithOptions(NSApplicationActivationOptions::empty());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, focused);
+}
+
+/// Focuses a menu-like window. Activating the app hands focus to the main
+/// window; take it back once that settles.
+// ponytail: focus dance; an NSPanel (tauri-nspanel) avoids activation entirely.
+pub fn focus_menu(window: WebviewWindow) {
     let _ = window.set_focus();
-    // Activating the app hands focus to the main window; take it back once that settles.
-    // ponytail: focus dance; an NSPanel (tauri-nspanel) avoids activation entirely.
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let _ = window.set_focus();
     });
 }
 
-/// The popover behaves like a menu: losing focus dismisses it, except for the
-/// focus shuffle right after it opens.
-pub fn popover_blurred(app: &AppHandle) {
+/// Menu-like windows close when they lose focus, except for the focus
+/// shuffle right after they open.
+pub fn menu_blurred(app: &AppHandle, window: WebviewWindow) {
     const GRACE: std::time::Duration = std::time::Duration::from_millis(600);
-    let Some(window) = app.get_webview_window("tray") else {
-        return;
-    };
-    let shown = *app.state::<Tray>().popover_shown.lock().unwrap();
+    let shown = app.state::<Tray>().shown_at.lock().unwrap().get(window.label()).copied();
     if let Some(left) = shown.and_then(|at| GRACE.checked_sub(at.elapsed())) {
-        // Maybe the opening shuffle, maybe a real click elsewhere: look again after it.
+        // Maybe the shuffle, maybe a real click elsewhere: look again once it
+        // settles. is_focused() is unreliable here, so ask whether Pebble is
+        // still the active app.
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(left).await;
-            if !window.is_focused().unwrap_or(true) {
+            if !pebble_active() {
                 let _ = window.hide();
             }
         });
         return;
     }
     let _ = window.hide();
+}
+
+#[cfg(target_os = "macos")]
+fn pebble_active() -> bool {
+    objc2_app_kit::NSRunningApplication::currentApplication().isActive()
+}
+#[cfg(not(target_os = "macos"))]
+fn pebble_active() -> bool {
+    true
+}
+
+/// Shows a window just below the menu bar item.
+pub fn show_under_bar(app: &AppHandle, window: &WebviewWindow) {
+    let rect = app
+        .state::<Tray>()
+        .icon
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|i| i.rect().ok().flatten());
+    if let Some(rect) = rect {
+        place_below(window, rect);
+    }
+    let _ = window.show();
 }
 
 /// Shows the alert under the bar item while something is firing, hides it otherwise.
@@ -175,19 +250,10 @@ fn sync_alert(app: &AppHandle) {
     };
     let visible = window.is_visible().unwrap_or(false);
     if firing && !visible {
-        let rect = app
-            .state::<Tray>()
-            .icon
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|i| i.rect().ok().flatten());
-        if let Some(rect) = rect {
-            place_below(&window, rect);
-        }
-        let _ = window.show();
+        remember_front_app(app);
+        show_under_bar(app, &window);
     } else if !firing && visible {
-        let _ = window.hide();
+        put_away(app, &window);
     }
 }
 
@@ -198,7 +264,8 @@ fn tick(app: &AppHandle) {
     {
         let mut alerted = tray.alerted.lock().unwrap();
         let mut firing = tray.firing.lock().unwrap();
-        for key in newly_due(&reminders, &alerted, now) {
+        let last_check = tray.last_check.lock().unwrap().replace(now);
+        for key in newly_due(&reminders, &alerted, now, last_check) {
             if !firing.contains(&key.0) {
                 firing.push(key.0.clone());
             }
@@ -212,7 +279,9 @@ fn tick(app: &AppHandle) {
         return;
     };
     // Next reminder as text; with nothing upcoming, the Pebble favicon instead.
-    match bar_title(&reminders, now) {
+    // Sync down: flag it in the bar so a stale list isn't trusted.
+    let warn = if *tray.sync_down.lock().unwrap() { "⚠︎ " } else { "" };
+    match bar_title(&reminders, now).map(|t| format!("{warn}{t}")).or((!warn.is_empty()).then(|| warn.trim().to_string())) {
         Some(title) => {
             let _ = icon.set_icon(None);
             let _ = icon.set_title(Some(title));
@@ -226,7 +295,8 @@ fn tick(app: &AppHandle) {
     }
 }
 
-pub fn set(app: &AppHandle, reminders: Vec<Reminder>) {
+pub fn set(app: &AppHandle, reminders: Vec<Reminder>, sync_down: bool) {
+    *app.state::<Tray>().sync_down.lock().unwrap() = sync_down;
     *app.state::<Tray>().reminders.lock().unwrap() = sanitize(reminders);
     tick(app);
 }
@@ -235,7 +305,8 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
     let tray = app.state::<Tray>();
     let reminders = tray.reminders.lock().unwrap().clone();
     let firing = tray.firing.lock().unwrap().clone();
-    Snapshot { reminders, firing }
+    let sync_down = *tray.sync_down.lock().unwrap();
+    Snapshot { reminders, firing, sync_down }
 }
 
 #[derive(Deserialize)]
@@ -386,12 +457,15 @@ mod tests {
         assert_eq!(bar_title(&overdue, now).unwrap(), "Passed overdue");
         // Only the just-due reminder fires, once per due time.
         let mut alerted = HashSet::new();
-        let due = newly_due(&list, &alerted, now);
+        let due = newly_due(&list, &alerted, now, None);
         assert_eq!(due, vec![("a".to_string(), now - MIN)]);
         alerted.extend(due);
-        assert!(newly_due(&list, &alerted, now).is_empty());
+        assert!(newly_due(&list, &alerted, now, Some(now - 5_000)).is_empty());
         // Snoozing changes the due time, so it fires again later.
         let snoozed = vec![r("a", "Passed", Some(now + 10 * MIN), "reminder")];
-        assert_eq!(newly_due(&snoozed, &alerted, now + 10 * MIN).len(), 1);
+        assert_eq!(newly_due(&snoozed, &alerted, now + 10 * MIN, None).len(), 1);
+        // Woke after two hours asleep: the reminder due an hour ago pops up too.
+        let woke = newly_due(&list, &alerted, now, Some(now - 120 * MIN));
+        assert_eq!(woke, vec![("old".to_string(), now - 60 * MIN)]);
     }
 }

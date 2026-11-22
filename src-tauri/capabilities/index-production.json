@@ -2,8 +2,8 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "index-production",
   "description": "Only the Index windows may use Pebble's narrow native API.",
-  "windows": ["main", "tray", "alert"],
+  "windows": ["main", "tray", "alert", "quick"],
   "local": false,
   "remote": { "urls": ["https://index.repebble.com"] },
-  "permissions": ["allow-desktop-info", "allow-mac-key-sync", "allow-mac-key-reveal", "allow-desktop-sign-in", "allow-cancel-desktop-sign-in", "allow-set-reminders", "allow-open-item", "allow-quit-app", "allow-get-reminders", "allow-reminder-action", "allow-check-for-updates", "core:window:allow-set-size", "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize", "clipboard-manager:allow-write-text"]
+  "permissions": ["allow-desktop-info", "allow-mac-key-sync", "allow-mac-key-reveal", "allow-desktop-sign-in", "allow-cancel-desktop-sign-in", "allow-set-reminders", "allow-open-item", "allow-quit-app", "allow-get-reminders", "allow-reminder-action", "allow-check-for-updates", "allow-get-shortcuts", "allow-set-shortcuts", "allow-quick-submit", "allow-hide-quick", "allow-open-quick", "core:window:allow-set-size", "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize", "clipboard-manager:allow-write-text"]
 }

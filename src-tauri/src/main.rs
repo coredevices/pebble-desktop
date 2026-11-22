@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod activation;
 mod cloud;
+mod quick;
 mod sign_in;
 mod tray;
 mod updater;
@@ -117,8 +118,9 @@ async fn cancel_desktop_sign_in(state: tauri::State<'_, Desktop>) -> Result<(), 
 }
 
 #[tauri::command]
-fn set_reminders(app: tauri::AppHandle, reminders: Vec<tray::Reminder>) {
-    tray::set(&app, reminders);
+fn set_reminders(app: tauri::AppHandle, reminders: Vec<tray::Reminder>, sync_down: Option<bool>) {
+    quick::main_ready();
+    tray::set(&app, reminders, sync_down.unwrap_or(false));
 }
 
 #[tauri::command]
@@ -149,12 +151,10 @@ fn quit_app(app: tauri::AppHandle) {
 
 const TITLE_BAR_SCRIPT: &str = r#"
 document.addEventListener("DOMContentLoaded", () => {
-  const style = document.createElement("style");
-  style.textContent = "body{padding-top:28px!important}";
+  document.documentElement.style.setProperty("--titlebar", "28px");
   const strip = document.createElement("div");
   strip.setAttribute("data-tauri-drag-region", "");
   strip.style.cssText = "position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;background:var(--bg,#fbf4ef)";
-  document.head.append(style);
   document.body.append(strip);
 });
 "#;
@@ -196,6 +196,7 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // An unreadable iMessage preference file must not prevent Index from opening.
             let activation = app.path().app_config_dir().map_err(Error::local)
@@ -204,9 +205,9 @@ fn main() {
             // Localhost IPC exists only in a debug binary. It is never in release capabilities.
             #[cfg(debug_assertions)]
             app.add_capability(serde_json::json!({
-                "identifier":"index-development", "windows":["main","tray","alert"], "local":false,
+                "identifier":"index-development", "windows":["main","tray","alert","quick"], "local":false,
                 "remote":{"urls":["http://localhost:3017"]},
-                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
+                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","allow-get-shortcuts","allow-set-shortcuts","allow-quick-submit","allow-hide-quick","allow-open-quick","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
             }).to_string())?;
             let url = base_url().join("/signin")?.to_string();
             let navigation_app = app.handle().clone();
@@ -217,6 +218,12 @@ fn main() {
                 // background, with a draggable strip above the content.
                 .title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true)
                 .initialization_script(TITLE_BAR_SCRIPT)
+                // Mostly hidden, yet it is what keeps reminders live for the menu bar:
+                // don't let WebKit throttle or suspend it in the background.
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+                .on_page_load(|_, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) { quick::main_loading(); }
+                })
                 .on_navigation(move |url| {
                     if allowed(url) { return true; }
                     if matches!(url.scheme(), "https" | "http") { let _ = navigation_app.opener().open_url(url.as_str(), None::<&str>); }
@@ -229,7 +236,7 @@ fn main() {
                 .build()?;
             // Menu bar popover and due-reminder alert; preloaded so they open instantly.
             // Each page sizes its window to fit its content.
-            for (label, path) in [("tray", "/tray"), ("alert", "/tray/alert")] {
+            for (label, path) in [("tray", "/tray"), ("alert", "/tray/alert"), ("quick", "/tray/quick")] {
                 let nav_app = app.handle().clone();
                 WebviewWindowBuilder::new(app, label, WebviewUrl::External(base_url().join(path)?))
                     .title("Pebble Reminders").inner_size(340.0, 120.0).resizable(false)
@@ -244,6 +251,7 @@ fn main() {
                     .build()?;
             }
             tray::install(app.handle())?;
+            quick::install(app.handle());
             // Cmd+Q closes Pebble to the menu bar (macOS gives no hook to cancel a
             // real quit); "Quit Pebble" in the menu bar item exits for real.
             #[cfg(target_os = "macos")]
@@ -269,13 +277,15 @@ fn main() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                tauri::WindowEvent::Focused(false) if window.label() == "tray" => {
-                    tray::popover_blurred(window.app_handle());
+                tauri::WindowEvent::Focused(false) if matches!(window.label(), "tray" | "quick") => {
+                    if let Some(window) = window.app_handle().get_webview_window(window.label()) {
+                        tray::menu_blurred(&window.app_handle().clone(), window);
+                    }
                 }
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates])
+        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates, quick::get_shortcuts, quick::set_shortcuts, quick::quick_submit, quick::hide_quick, quick::open_quick])
         .build(tauri::generate_context!())
         .expect("Pebble desktop failed to start")
         .run(|_app, _event| {
