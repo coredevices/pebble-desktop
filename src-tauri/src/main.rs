@@ -150,6 +150,13 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 const TITLE_BAR_SCRIPT: &str = r#"
+// Native feel (see html.desktop in the web app's globals.css): no page-style
+// context menu (Reload, Back) except where text can be edited or copied.
+document.documentElement.classList.add("desktop");
+document.addEventListener("contextmenu", (e) => {
+  const editable = e.target.closest?.("input, textarea, [contenteditable='true'], .select-text");
+  if (!editable && String(getSelection()) === "") e.preventDefault();
+});
 document.addEventListener("DOMContentLoaded", () => {
   document.documentElement.style.setProperty("--titlebar", "28px");
   const strip = document.createElement("div");

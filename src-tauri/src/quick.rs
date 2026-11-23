@@ -147,7 +147,7 @@ pub fn set_shortcuts(app: AppHandle, shortcuts: Shortcuts) -> Result<(), String>
 /// typed or said there. The bar shows its own confirmation, then hides itself.
 /// Errors (main page not up) let the bar keep the text instead of losing it.
 #[tauri::command]
-pub fn quick_submit(app: AppHandle, text: String, voice: bool) -> Result<(), String> {
+pub fn quick_submit(app: AppHandle, text: String, voice: bool, id: Option<String>) -> Result<(), String> {
     let text: String = text.chars().take(10_000).collect();
     if text.trim().is_empty() {
         return Ok(());
@@ -155,7 +155,8 @@ pub fn quick_submit(app: AppHandle, text: String, voice: bool) -> Result<(), Str
     // ponytail: "ready" means the page mounted, not an ack per message; add a
     // round-trip ack if text still goes missing.
     let main = app.get_webview_window("main").filter(|_| MAIN_READY.load(Ordering::SeqCst)).ok_or("Pebble is still loading.")?;
-    let payload = serde_json::json!({ "text": text, "voice": voice });
+    // `id` names the recording, so the quick bar can show how Index handled it.
+    let payload = serde_json::json!({ "text": text, "voice": voice, "id": id });
     main.eval(format!("window.__pebbleCompose({payload})")).map_err(|e| e.to_string())
 }
 
