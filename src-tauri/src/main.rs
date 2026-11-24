@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod activation;
 mod cloud;
+mod presence;
 mod quick;
 mod sign_in;
 mod tray;
@@ -29,6 +30,24 @@ struct DesktopInfo {
     computer_name: String,
     app_version: String,
     os_version: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Presence {
+    present: bool,
+    /// Stable per install, so each Mac gets its own presence document.
+    device: String,
+    name: String,
+}
+
+#[tauri::command]
+async fn presence(state: tauri::State<'_, Desktop>) -> Result<Presence, ()> {
+    let device = state.activation.lock().await.as_ref()
+        .map(|a| a.installation_id().to_string())
+        // No saved install id: fall back to the computer name, still one doc per Mac.
+        .unwrap_or_else(|_| format!("mac-{}", state.computer_name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(64).collect::<String>()));
+    Ok(Presence { present: presence::present(), device, name: state.computer_name.clone() })
 }
 
 #[tauri::command]
@@ -125,12 +144,17 @@ fn set_reminders(app: tauri::AppHandle, reminders: Vec<tray::Reminder>, sync_dow
 
 #[tauri::command]
 fn open_item(app: tauri::AppHandle, id: Option<String>, page: Option<String>) {
-    if let Some(id) = id.clone() {
-        tray::act(&app, id, tray::Op::Dismiss, None);
-    }
     // Pages the menu bar may open, by name; never a path from the page.
-    let page = page.and_then(|p| (p == "bug-report").then_some("/bug-report".to_string()));
-    let path = id.filter(|id| cloud::valid_id(id)).map(|id| format!("/item/{id}")).or(page);
+    let id = id.filter(|id| cloud::valid_id(id));
+    let path = match (id, page.as_deref()) {
+        (Some(id), Some("recording")) => Some(format!("/recording/{id}")),
+        (Some(id), _) => {
+            tray::act(&app, id.clone(), tray::Op::Dismiss, None);
+            Some(format!("/item/{id}"))
+        }
+        (None, Some("bug-report")) => Some("/bug-report".to_string()),
+        _ => None,
+    };
     tray::show_main(&app, path);
 }
 
@@ -214,7 +238,7 @@ fn main() {
             app.add_capability(serde_json::json!({
                 "identifier":"index-development", "windows":["main","tray","alert","quick"], "local":false,
                 "remote":{"urls":["http://localhost:3017"]},
-                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","allow-get-shortcuts","allow-set-shortcuts","allow-quick-submit","allow-hide-quick","allow-open-quick","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
+                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","allow-get-shortcuts","allow-set-shortcuts","allow-quick-submit","allow-hide-quick","allow-open-quick","allow-presence","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
             }).to_string())?;
             let url = base_url().join("/signin")?.to_string();
             let navigation_app = app.handle().clone();
@@ -258,6 +282,7 @@ fn main() {
                     .build()?;
             }
             tray::install(app.handle())?;
+            presence::install(app.handle());
             quick::install(app.handle());
             // Cmd+Q closes Pebble to the menu bar (macOS gives no hook to cancel a
             // real quit); "Quit Pebble" in the menu bar item exits for real.
@@ -292,7 +317,7 @@ fn main() {
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates, quick::get_shortcuts, quick::set_shortcuts, quick::quick_submit, quick::hide_quick, quick::open_quick])
+        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates, quick::get_shortcuts, quick::set_shortcuts, quick::quick_submit, quick::hide_quick, quick::open_quick, presence])
         .build(tauri::generate_context!())
         .expect("Pebble desktop failed to start")
         .run(|_app, _event| {

@@ -3041,8 +3041,10 @@ dependencies = [
 name = "pebble-desktop"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "chrono",
  "objc2-app-kit",
+ "objc2-foundation",
  "pebble-mac-key",
  "reqwest 0.12.28",
  "serde",

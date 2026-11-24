@@ -17,6 +17,7 @@ fn main() {
             "quick_submit",
             "hide_quick",
             "open_quick",
+            "presence",
         ]),
     ))
     .expect("Tauri configuration is valid");

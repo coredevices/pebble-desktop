@@ -52,6 +52,10 @@ pub struct Activation {
 }
 
 impl Activation {
+    pub fn installation_id(&self) -> &str {
+        &self.prefs.installation_id
+    }
+
     pub fn load(path: PathBuf) -> Result<Self, Error> {
         let prefs = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).map_err(Error::local)?,
