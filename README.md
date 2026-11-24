@@ -104,6 +104,12 @@ same tracks as firmware: `nightly`, `internal`, `alpha`, `beta`, `production`.
   Pebble then asks to restart, or uses the new version next launch. It only
   moves to a strictly newer version; the server cannot roll users back.
 - Debug builds never check.
+- Automatic by default: the update downloads in the background, then installs
+  and restarts Pebble once no Pebble window is showing or you've stepped away
+  (see `presence.rs`). Settings → Updates turns this off (`updates.json` in the
+  app config folder).
+- eng-dash is the only update endpoint; GitHub releases host first-time
+  downloads.
 
 Releases are built and signed on the lab Mac `unicorn-mac-2`, set up from the
 unicorn repo (`desktop-signer/`). Bump `version` in `src-tauri/tauri.conf.json`
@@ -120,6 +126,24 @@ and updater artifacts, notarizes and staples, checks the result with
 `codesign`, `stapler` and `spctl`, then uploads `Pebble.app.tar.gz` and its
 `.sig` to eng-dash. `PUBLISH=0` stops after the checks. The checked-in config
 stays ad-hoc signed, so `npm run build` needs no keys.
+
+### GitHub Actions (macOS, Windows, Linux)
+
+`.github/workflows/release.yml` builds all three. Push a tag `vX.Y.Z` that matches
+`version` in `tauri.conf.json`: each platform's signed updater bundle goes to
+eng-dash on the `production` track, and a GitHub release gets the installers
+(`.dmg` for Apple silicon and Intel, Windows `-setup.exe`, Linux `.AppImage`;
+no `.deb`, since a .deb install can't apply AppImage updates). Running the workflow by hand publishes to a tester
+track (`internal`, `alpha`, `beta`) with no GitHub release.
+
+macOS builds are Developer ID signed and notarized. Windows and Linux installers
+are not code-signed (Windows SmartScreen warns on first run); every platform's
+updates are still verified against the updater key.
+
+Repository secrets: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
+`APPLE_CERTIFICATE` (base64 of the Developer ID `.p12`), `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_P8`
+(contents of the `.p8`), `DESKTOP_RELEASE_SECRET`.
 
 ### Keys and secrets (never commit them)
 

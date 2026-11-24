@@ -51,14 +51,4 @@ spctl --assess --type execute "$BUNDLE/Pebble.app"
 
 TARBALL="$BUNDLE/Pebble.app.tar.gz"
 if [[ "${PUBLISH:-1}" == 0 ]]; then echo "Built and verified $TARBALL (PUBLISH=0, not uploaded)"; exit; fi
-BODY=$(jq -n --arg v "$VERSION" --arg t "$TRACK" --arg n "$NOTES" --arg p "$PLATFORM" \
-  --arg s "$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)" --rawfile sig "$TARBALL.sig" \
-  '{version:$v, track:$t, notes:$n, artifact:{platform:$p, sha256:$s, signature:$sig}}')
-RESP=$(publish "$BODY")
-URL=$(jq -r '.upload_url // empty' <<<"$RESP")
-if [[ -n "$URL" ]]; then
-  curl -fsS -X PUT --upload-file "$TARBALL" "$URL"
-  RESP=$(publish "$BODY") # eng-dash hashes the upload, then deploys
-fi
-echo "$RESP"
-jq -e '.status == "deployed"' <<<"$RESP" >/dev/null
+scripts/publish.sh "$TRACK" "$PLATFORM" "$TARBALL" "$NOTES"

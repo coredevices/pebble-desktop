@@ -129,14 +129,21 @@ pub fn newly_due(
         .collect()
 }
 
-/// Puts a window centered just below the bar item.
+/// Puts a window centered just below the bar item, or just above it when the
+/// tray is at the bottom of the screen (Windows taskbar).
 fn place_below(window: &WebviewWindow, rect: tauri::Rect) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let at = rect.position.to_physical::<f64>(scale);
     let size = rect.size.to_physical::<f64>(scale);
-    let width = window.outer_size().map(|s| s.width as f64).unwrap_or(0.0);
-    let x = at.x + size.width / 2.0 - width / 2.0;
-    let _ = window.set_position(PhysicalPosition::new(x, at.y + size.height + 4.0 * scale));
+    let outer = window.outer_size().map(|s| (s.width as f64, s.height as f64)).unwrap_or_default();
+    let x = at.x + size.width / 2.0 - outer.0 / 2.0;
+    let mut y = at.y + size.height + 4.0 * scale;
+    if let Ok(Some(screen)) = window.monitor_from_point(at.x, at.y) {
+        if y + outer.1 > (screen.position().y + screen.size().height as i32) as f64 {
+            y = at.y - outer.1 - 4.0 * scale;
+        }
+    }
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 fn toggle_popover(app: &AppHandle, rect: tauri::Rect) {
@@ -282,6 +289,13 @@ fn tick(app: &AppHandle) {
     // Sync down: flag it in the bar so a stale list isn't trusted.
     let warn = if *tray.sync_down.lock().unwrap() { "⚠︎ " } else { "" };
     match bar_title(&reminders, now).map(|t| format!("{warn}{t}")).or((!warn.is_empty()).then(|| warn.trim().to_string())) {
+        // Only the macOS menu bar shows text; elsewhere keep the icon, text as its tooltip.
+        Some(title) if !cfg!(target_os = "macos") => {
+            let _ = icon.set_tooltip(Some(title));
+        }
+        None if !cfg!(target_os = "macos") => {
+            let _ = icon.set_tooltip(Some("Pebble"));
+        }
         Some(title) => {
             let _ = icon.set_icon(None);
             let _ = icon.set_title(Some(title));
@@ -401,6 +415,19 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    // Linux tray icons report no clicks, so the popover can't open: a menu instead.
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::menu::{MenuBuilder, MenuItem};
+        let open = MenuItem::with_id(app, "open", "Open Pebble", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit Pebble", true, None::<&str>)?;
+        icon.set_menu(Some(MenuBuilder::new(app).item(&open).item(&quit).build()?))?;
+        icon.on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app, None),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    }
     *app.state::<Tray>().icon.lock().unwrap() = Some(icon);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {

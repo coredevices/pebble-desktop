@@ -32,7 +32,12 @@ pub struct Shortcuts {
 
 impl Default for Shortcuts {
     fn default() -> Self {
-        Self { text: "Control+Alt+KeyN".into(), voice: "Control+Alt+KeyV".into() }
+        // Pebble Dev adds Shift, so it can run beside the release app.
+        if cfg!(debug_assertions) {
+            Self { text: "Control+Alt+Shift+KeyN".into(), voice: "Control+Alt+Shift+KeyV".into() }
+        } else {
+            Self { text: "Control+Alt+KeyN".into(), voice: "Control+Alt+KeyV".into() }
+        }
     }
 }
 

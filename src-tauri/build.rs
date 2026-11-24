@@ -18,6 +18,8 @@ fn main() {
             "hide_quick",
             "open_quick",
             "presence",
+            "get_auto_update",
+            "set_auto_update",
         ]),
     ))
     .expect("Tauri configuration is valid");

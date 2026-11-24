@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "build": "tauri build --bundles app",
+    "build:dev": "tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json",
     "tauri": "tauri"
   },
   "devDependencies": {

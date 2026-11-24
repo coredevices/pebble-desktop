@@ -181,7 +181,8 @@ document.addEventListener("contextmenu", (e) => {
   const editable = e.target.closest?.("input, textarea, [contenteditable='true'], .select-text");
   if (!editable && String(getSelection()) === "") e.preventDefault();
 });
-document.addEventListener("DOMContentLoaded", () => {
+// Only the Mac window has its title bar merged into the page.
+if (navigator.userAgent.includes("Mac")) document.addEventListener("DOMContentLoaded", () => {
   document.documentElement.style.setProperty("--titlebar", "28px");
   const strip = document.createElement("div");
   strip.setAttribute("data-tauri-drag-region", "");
@@ -219,7 +220,12 @@ fn computer_name() -> String {
             }
         }
     }
-    "My Mac".into()
+    // Windows sets COMPUTERNAME; Linux has /etc/hostname.
+    let other = std::env::var("COMPUTERNAME").ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().chars().filter(|c| !c.is_control()).take(128).collect::<String>())
+        .filter(|n| !n.is_empty());
+    other.unwrap_or_else(|| if cfg!(target_os = "macos") { "My Mac".into() } else { "My computer".into() })
 }
 
 fn main() {
@@ -239,16 +245,18 @@ fn main() {
             app.add_capability(serde_json::json!({
                 "identifier":"index-development", "windows":["main","tray","alert","quick"], "local":false,
                 "remote":{"urls":["http://localhost:3017"]},
-                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","allow-get-shortcuts","allow-set-shortcuts","allow-quick-submit","allow-hide-quick","allow-open-quick","allow-presence","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
+                "permissions":["allow-desktop-info","allow-mac-key-sync","allow-mac-key-reveal","allow-desktop-sign-in","allow-cancel-desktop-sign-in","allow-set-reminders","allow-open-item","allow-quit-app","allow-get-reminders","allow-reminder-action","allow-check-for-updates","allow-get-shortcuts","allow-set-shortcuts","allow-quick-submit","allow-hide-quick","allow-open-quick","allow-presence","allow-get-auto-update","allow-set-auto-update","core:window:allow-set-size","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize","clipboard-manager:allow-write-text"]
             }).to_string())?;
             let url = base_url().join("/signin")?.to_string();
             let navigation_app = app.handle().clone();
             let popup_app = app.handle().clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
-                .title("Pebble").inner_size(420.0, 1000.0).min_inner_size(420.0, 560.0)
-                // Title bar merged into the page: traffic lights sit over the app's own
-                // background, with a draggable strip above the content.
-                .title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true)
+            let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
+                .title(if cfg!(debug_assertions) { "Pebble Dev" } else { "Pebble" }).inner_size(420.0, 1000.0).min_inner_size(420.0, 560.0);
+            // Title bar merged into the page: traffic lights sit over the app's own
+            // background, with a draggable strip above the content.
+            #[cfg(target_os = "macos")]
+            let main = main.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+            main
                 .initialization_script(TITLE_BAR_SCRIPT)
                 // Mostly hidden, yet it is what keeps reminders live for the menu bar:
                 // don't let WebKit throttle or suspend it in the background.
@@ -318,7 +326,7 @@ fn main() {
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates, quick::get_shortcuts, quick::set_shortcuts, quick::quick_submit, quick::hide_quick, quick::open_quick, presence])
+        .invoke_handler(tauri::generate_handler![desktop_info, mac_key_sync, mac_key_reveal, desktop_sign_in, cancel_desktop_sign_in, set_reminders, open_item, quit_app, get_reminders, reminder_action, updater::check_for_updates, updater::get_auto_update, updater::set_auto_update, quick::get_shortcuts, quick::set_shortcuts, quick::quick_submit, quick::hide_quick, quick::open_quick, presence])
         .build(tauri::generate_context!())
         .expect("Pebble desktop failed to start")
         .run(|_app, _event| {
