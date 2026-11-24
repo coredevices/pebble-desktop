@@ -195,9 +195,10 @@ pub fn base_url() -> Url {
     Url::parse(url).expect("static URL")
 }
 
+/// Only the app's own origin: a debug build stays on the local server, so it never
+/// drifts onto the public site (and its separate sign-in).
 fn allowed(url: &Url) -> bool {
-    url.origin().ascii_serialization() == "https://index.repebble.com"
-        || (cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://localhost:3017")
+    url.origin() == base_url().origin()
 }
 
 fn computer_name() -> String {
@@ -333,9 +334,9 @@ mod tests {
     use super::*;
     #[test]
     fn pins_remote_origin() {
-        assert!(allowed(
-            &Url::parse("https://index.repebble.com/settings").unwrap()
-        ));
+        assert!(allowed(&base_url().join("/settings").unwrap()));
+        // Debug (tests) runs against the local server only.
+        assert!(!allowed(&Url::parse("https://index.repebble.com/settings").unwrap()));
         for url in [
             "http://index.repebble.com",
             "https://index.repebble.com.evil.test",
