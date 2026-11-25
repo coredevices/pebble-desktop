@@ -86,14 +86,21 @@ jobs:
             echo '{"bundle":{"createUpdaterArtifacts":true}}' > release.conf.json
           fi
 
+      # The shared Apple CI .p12 holds several identities (iOS ones too), which Tauri's own
+      # APPLE_CERTIFICATE import refuses; import it here and sign by identity name.
+      - name: Import Apple signing identities
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTS_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTS_P12_PW }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS signing (imported into a temporary keychain) and notarization.
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTS_P12 || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTS_P12_PW || '' }}
+          # macOS signing (identity from the keychain imported above) and notarization.
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
           APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
