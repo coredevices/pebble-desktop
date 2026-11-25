@@ -9,7 +9,7 @@
 # Run it by hand (Actions > Release > Run workflow) to build and publish to a
 # tester track (internal, alpha, beta) without a GitHub release.
 #
-# Secrets: see README "Releases and auto-update".
+# Secrets: see the maintainers' release notes (private).
 name: Release
 
 on:
@@ -110,8 +110,13 @@ jobs:
           # Tag builds go into one draft release; manual runs only publish to eng-dash.
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           releaseName: Pebble ${{ github.ref_name }}
-          releaseBody: Download the installer for your computer below. Pebble keeps itself up to date after that.
+          releaseBody: |
+            **Very early alpha.** Expect rough edges and bugs; please report them from Settings > Report a Bug.
+
+            Download the installer for your computer below. Pebble keeps itself up to date after that.
           releaseDraft: true
+          # ponytail: every tag ships as a GitHub pre-release; drop this for the first stable release.
+          prerelease: true
           # Updates come from eng-dash only, so no latest.json on the release.
           includeUpdaterJson: false
 
@@ -151,4 +156,4 @@ jobs:
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
