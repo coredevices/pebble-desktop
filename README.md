@@ -7,7 +7,8 @@ Index web app in a native window. On top of that it adds:
 - a menu bar / system tray icon and a global shortcut for a quick capture bar;
 - reminder pop-ups on your desktop;
 - "at this computer" presence, so your phone can hold back watch notifications
-  while you're at the computer (can be turned off in Settings);
+  while you're at the computer (can be turned off in Settings). The Pebble
+  mobile app doesn't use it yet; this is groundwork too;
 - signed automatic updates (can be turned off in Settings);
 - on macOS, early groundwork for iMessage support (see below).
 
