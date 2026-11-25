@@ -74,7 +74,7 @@ fn register(app: &AppHandle, s: &Shortcuts) -> Result<(), String> {
                 }
             })
             .map_err(|e| {
-                eprintln!("shortcuts: register {shortcut:?} failed: {e}");
+                crate::log(format!("shortcuts: register {shortcut:?} failed: {e}"));
                 "That shortcut is already used by another app.".to_string()
             })?;
     }
@@ -85,9 +85,9 @@ fn register(app: &AppHandle, s: &Shortcuts) -> Result<(), String> {
 /// At launch: the saved shortcuts, or the defaults if those can't be registered.
 pub fn install(app: &AppHandle) {
     if let Err(error) = register(app, &saved(app)) {
-        eprintln!("shortcuts: {error}; falling back to defaults");
+        crate::log(format!("shortcuts: {error}; falling back to defaults"));
         if let Err(error) = register(app, &Shortcuts::default()) {
-            eprintln!("shortcuts: defaults failed too: {error}");
+            crate::log(format!("shortcuts: defaults failed too: {error}"));
         }
     }
 }

@@ -67,6 +67,10 @@ pub async fn check_for_updates(app: AppHandle, id_token: Option<String>) {
     }
 }
 
+pub fn pending_version() -> Option<String> {
+    PENDING.lock().unwrap().as_ref().map(|(update, _)| update.version.clone())
+}
+
 #[tauri::command]
 pub fn get_auto_update() -> bool {
     ENABLED.load(Ordering::SeqCst)
@@ -97,9 +101,12 @@ async fn check(app: &AppHandle, id_token: Option<String>) {
         return;
     }
     match download(app, id_token).await {
-        Ok(Some(update)) if ENABLED.load(Ordering::SeqCst) => *PENDING.lock().unwrap() = Some(update),
+        Ok(Some(update)) if ENABLED.load(Ordering::SeqCst) => {
+            crate::log(format!("update {} downloaded", update.0.version));
+            *PENDING.lock().unwrap() = Some(update);
+        }
         Ok(_) => {}
-        Err(error) => eprintln!("update check failed: {error}"),
+        Err(error) => crate::log(format!("update check failed: {error}")),
     }
 }
 
@@ -127,10 +134,11 @@ async fn apply_when_idle(app: &AppHandle) {
     let Some((update, bytes)) = PENDING.lock().unwrap().take() else {
         return;
     };
+    crate::log(format!("installing update {}", update.version));
     // Windows runs the installer and exits here; macOS and Linux swap the files.
     match update.install(bytes) {
         Ok(()) => app.restart(),
-        Err(error) => eprintln!("update install failed: {error}"),
+        Err(error) => crate::log(format!("update install failed: {error}")),
     }
 }
 

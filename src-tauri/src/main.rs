@@ -30,6 +30,44 @@ struct DesktopInfo {
     computer_name: String,
     app_version: String,
     os_version: String,
+    arch: &'static str,
+    auto_update: bool,
+    /// Downloaded and waiting to install, if any.
+    pending_update: Option<String>,
+    present: bool,
+    /// Recent app log lines, for bug reports.
+    logs: Vec<String>,
+}
+
+/// Recent app log lines (also printed to stderr), sent with bug reports.
+static LOG: std::sync::Mutex<std::collections::VecDeque<String>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+pub fn log(line: String) {
+    eprintln!("{line}");
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut log = LOG.lock().unwrap();
+    if log.len() >= 200 {
+        log.pop_front();
+    }
+    log.push_back(format!("{secs} {line}"));
+}
+
+fn os_version() -> String {
+    let run = |cmd: &str, args: &[&str]| {
+        let mut command = std::process::Command::new(cmd);
+        command.args(args);
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000); // CREATE_NO_WINDOW
+        command.output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    };
+    match std::env::consts::OS {
+        "macos" => run("/usr/bin/sw_vers", &["-productVersion"]),
+        "windows" => run("cmd", &["/c", "ver"]),
+        _ => std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|s| s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
+            .unwrap_or_default(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -52,17 +90,17 @@ async fn presence(state: tauri::State<'_, Desktop>) -> Result<Presence, ()> {
 
 #[tauri::command]
 fn desktop_info(app: tauri::AppHandle, state: tauri::State<'_, Desktop>) -> DesktopInfo {
-    let os_version = std::process::Command::new("/usr/bin/sw_vers")
-        .arg("-productVersion")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
     DesktopInfo {
         platform: std::env::consts::OS,
         mac_key_available: cfg!(target_os = "macos"),
         computer_name: state.computer_name.clone(),
         app_version: app.package_info().version.to_string(),
-        os_version,
+        os_version: os_version(),
+        arch: std::env::consts::ARCH,
+        auto_update: updater::get_auto_update(),
+        pending_update: updater::pending_version(),
+        present: presence::present(),
+        logs: LOG.lock().unwrap().iter().cloned().collect(),
     }
 }
 
