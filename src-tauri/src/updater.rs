@@ -105,7 +105,8 @@ async fn check(app: &AppHandle, id_token: Option<String>) {
             crate::log(format!("update {} downloaded", update.0.version));
             *PENDING.lock().unwrap() = Some(update);
         }
-        Ok(_) => {}
+        Ok(None) => crate::log(format!("update check ({}): up to date", if signed_in { "signed in" } else { "anonymous" })),
+        Ok(Some(_)) => {} // turned off meanwhile
         Err(error) => crate::log(format!("update check failed: {error}")),
     }
 }

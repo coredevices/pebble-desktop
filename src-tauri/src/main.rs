@@ -274,6 +274,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            log(format!("Pebble {} started on {} {}", app.package_info().version, std::env::consts::OS, std::env::consts::ARCH));
             // An unreadable iMessage preference file must not prevent Index from opening.
             let activation = app.path().app_config_dir().map_err(Error::local)
                 .and_then(|directory| Activation::load(activation::preferences_path(&directory)));
