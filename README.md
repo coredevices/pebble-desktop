@@ -141,7 +141,7 @@ are not code-signed (Windows SmartScreen warns on first run); every platform's
 updates are still verified against the updater key.
 
 Repository secrets: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
-`APPLE_CERTIFICATE` (base64 of the Developer ID `.p12`), `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_CERTS_P12` (base64 `.p12` holding the Developer ID Application identity; the same bundle CoreApp CI uses), `APPLE_CERTS_P12_PW`,
 `APPLE_SIGNING_IDENTITY`, `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_P8`
 (contents of the `.p8`), `DESKTOP_RELEASE_SECRET`.
 
