@@ -18,7 +18,9 @@ VERSION=$(jq -r .version src-tauri/tauri.conf.json)
 SHA=$( (sha256sum "$BUNDLE" 2>/dev/null || shasum -a 256 "$BUNDLE") | cut -d' ' -f1)
 
 publish() {
-  curl -sS --fail-with-body -X POST "$ENG_DASH/api/desktop/releases" \
+  # Retries: eng-dash sits behind Cloudflare, which gives up (524) after 100 s while eng-dash
+  # is still hashing a large upload. Publishing the same bytes again is safe.
+  curl -sS --fail-with-body --retry 3 --retry-all-errors --retry-delay 15 -X POST "$ENG_DASH/api/desktop/releases" \
     -H "Authorization: Bearer $DESKTOP_RELEASE_SECRET" -H 'Content-Type: application/json' -d "$1"
 }
 BODY=$(jq -n --arg v "$VERSION" --arg t "$TRACK" --arg n "$NOTES" --arg p "$PLATFORM" --arg s "$SHA" \
@@ -26,7 +28,7 @@ BODY=$(jq -n --arg v "$VERSION" --arg t "$TRACK" --arg n "$NOTES" --arg p "$PLAT
 RESP=$(publish "$BODY")
 URL=$(jq -r '.upload_url // empty' <<<"$RESP")
 if [[ -n "$URL" ]]; then
-  curl -fsS -X PUT --upload-file "$BUNDLE" "$URL"
+  curl -fsS --retry 3 --retry-all-errors --retry-delay 15 -X PUT --upload-file "$BUNDLE" "$URL"
   RESP=$(publish "$BODY") # eng-dash hashes the upload, then deploys
 fi
 echo "$RESP"
