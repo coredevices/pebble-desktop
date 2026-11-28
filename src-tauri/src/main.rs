@@ -325,6 +325,8 @@ fn main() {
                     .on_navigation(move |url| {
                         if allowed(url) && url.path() == path { return true; }
                         if allowed(url) { tray::show_main(&nav_app, Some(url.path().to_string())); }
+                        // Links in a reminder's text open in the browser.
+                        else if matches!(url.scheme(), "https" | "http") { let _ = nav_app.opener().open_url(url.as_str(), None::<&str>); }
                         false
                     })
                     .build()?;
